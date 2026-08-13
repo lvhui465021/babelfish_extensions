@@ -357,7 +357,16 @@ pe_create_server_port(int family, const char *hostName,
 					(errmsg("listening on %s address \"%s\", port %d",
 							familyDesc, addrDesc, (int) portNumber)));
 
-		listen_add_socket(fd, protocol_config);
+		/*
+		 * Stamp this listener as TDS so ServerLoop's accept dispatch sets
+		 * Port->protocol_kind correctly (see listen_add_protocol_socket's
+		 * header comment in protocol_extension.h). TDS never registers a
+		 * ProtocolRoutine -- it dispatches entirely through protocol_config
+		 * -- so this only affects protocol_kind-keyed logic (MyCompatMode
+		 * resolution, the fork-failure error framing guard), not the
+		 * TDS wire protocol itself.
+		 */
+		listen_add_protocol_socket(fd, protocol_config, COMPAT_PROTOCOL_TDS);
 		added++;
 	}
 

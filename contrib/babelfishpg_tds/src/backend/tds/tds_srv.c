@@ -127,6 +127,19 @@ static void
 pe_listen_init(void)
 {
 	pe_create_server_ports();
+
+	/*
+	 * Chain to whatever listen_init_hook was already registered before us.
+	 * listen_init_hook is a single global function pointer, not a registry:
+	 * pe_init() saves the previous value but nothing called through to it,
+	 * so any listener registered earlier (e.g. openHalo's MySQL listener in
+	 * aux_mysql) was silently disabled whenever babelfishpg_tds appeared
+	 * later in shared_preload_libraries.  Chain unconditionally -- a
+	 * disabled TDS listener must not disable another module's listener
+	 * either (mirrors aux_mysql_init.c's mysql_listen_init()).
+	 */
+	if (prev_listen_init != NULL)
+		prev_listen_init();
 }
 
 /*
@@ -161,6 +174,17 @@ pe_tds_init(ClientSocket *client_sock)
 	port->sock = client_sock->sock;
 	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
 	port->raddr.salen = client_sock->raddr.salen;
+
+	/*
+	 * Propagate the listener-selected dialect, mirroring pq_init()'s
+	 * client_sock->protocol_kind copy for standard/MySQL connections. TDS
+	 * never registers a ProtocolRoutine, so port->protocol_routine is
+	 * deliberately left NULL here (calling AssignProtocolRoutine() would
+	 * elog(FATAL) for a kind with no registered routine) -- only
+	 * protocol_kind-keyed logic (MyCompatMode resolution in InitCompatMode(),
+	 * the fork-failure error framing guard in postmaster.c) depends on this.
+	 */
+	port->protocol_kind = client_sock->protocol_kind;
  
 	/* fill in the server (local) address */
 	port->laddr.salen = sizeof(port->laddr.addr);
