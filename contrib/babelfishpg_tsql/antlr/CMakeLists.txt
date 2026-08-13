@@ -11,8 +11,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -O2 -ggdb -w -Wno-deprecated")
 message(STATUS "CMAKE_C_FLAGS=${CMAKE_C_FLAGS}")
 
 # add antrl4cpp artifacts to project environment
-#include_directories($ENV{ANTLR4_RUNTIME_INCLUDE_DIR})
-SET (MYDIR /usr/local/include/antlr4-runtime/)
+set(MYDIR $ENV{ANTLR4_RUNTIME_INCLUDE_DIR})
+if(NOT MYDIR)
+    set(MYDIR /usr/local/include/antlr4-runtime/)
+endif()
 include_directories(${MYDIR})
 
 # set variable pointing to the antlr tool that supports C++

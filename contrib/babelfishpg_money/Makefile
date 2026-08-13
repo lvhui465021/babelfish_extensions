@@ -13,6 +13,7 @@ DATA_built = babelfishpg_money--1.1.0.sql
 
 CFLAGS = `$(PG_CONFIG) --includedir-server`
 PG_CFLAGS += -Werror -Wfloat-conversion
+PG_CFLAGS += -Wno-error=missing-variable-declarations
 PG_CFLAGS += -fstack-protector-strong
 TESTS = $(wildcard test/sql/*.sql)
 

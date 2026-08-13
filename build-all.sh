@@ -29,6 +29,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KERNEL_DIR="${KERNEL_DIR:-$SCRIPT_DIR/../postgresql_modified_for_babelfish}"
 PREFIX="${PREFIX:-$KERNEL_DIR/inst}"
+ANTLR4_JAVA_BIN="${ANTLR4_JAVA_BIN:-java}"
+ANTLR4_RUNTIME_INCLUDE_DIR="${ANTLR4_RUNTIME_INCLUDE_DIR:-/usr/local/include/antlr4-runtime}"
+ANTLR4_RUNTIME_LIB_DIR="${ANTLR4_RUNTIME_LIB_DIR:-/usr/local/lib}"
 
 if [ ! -d "$KERNEL_DIR" ]; then
     echo "kernel tree not found: $KERNEL_DIR" >&2
@@ -36,14 +39,15 @@ if [ ! -d "$KERNEL_DIR" ]; then
     exit 1
 fi
 
-for tool in meson ninja make cc c++ pkg-config cmake java flex perl; do
+for tool in meson ninja make cc c++ pkg-config cmake "$ANTLR4_JAVA_BIN" flex perl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
 done
-[ -f /usr/local/include/antlr4-runtime/antlr4-runtime.h ] || {
-    echo "ANTLR4 4.13.2 runtime headers not found under /usr/local/include/antlr4-runtime" >&2
+[ -f "$ANTLR4_RUNTIME_INCLUDE_DIR/antlr4-runtime.h" ] || {
+    echo "ANTLR4 4.13.2 runtime headers not found under $ANTLR4_RUNTIME_INCLUDE_DIR" >&2
     echo "install the matching runtime first (FUSION_PLAN.md section 5.6)" >&2
     exit 1
 }
+export ANTLR4_JAVA_BIN ANTLR4_RUNTIME_INCLUDE_DIR ANTLR4_RUNTIME_LIB_DIR
 
 # --- kernel ----------------------------------------------------------------
 cd "$KERNEL_DIR"

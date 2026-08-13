@@ -18,6 +18,7 @@ MODULEPATH = $$libdir/$(EXTENSION)
 MODULE_big = $(EXTENSION)
 
 PG_CFLAGS += -g -Werror -Wfloat-conversion
+PG_CFLAGS += -Wno-error=missing-variable-declarations
 PG_CFLAGS += -fstack-protector-strong
 ifdef PREV_EXTVERSION
 DATA = sql/$(EXTENSION)--$(PREV_EXTVERSION).sql

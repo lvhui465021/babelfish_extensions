@@ -3768,7 +3768,7 @@ TdsGetAndSetParamIndex(const char *name)
 		int			i = 0,
 					temp = 0;
 		const char *source = req->metaDataParameterValue->data;
-		char	   *pos;
+		const char *pos;
 		int			ptr;
 		int			qlen = strlen(source);
 		int			nlen = strlen(name);
