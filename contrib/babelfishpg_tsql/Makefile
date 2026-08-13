@@ -89,12 +89,23 @@ OBJS += src/pltsql_bulkcopy.o
 
 PG_CXXFLAGS += -g -Werror -Wfloat-conversion
 PG_CXXFLAGS += -Wno-deprecated -Wno-error=attributes -Wno-suggest-attribute=format # disable some warnings from ANTLR runtime header
+# ParseTree::operator== hides RuleContext::operator== in the upstream ANTLR4
+# 4.13.2 C++ runtime headers (tree/ParseTree.h vs RuleContext.h) -- a known,
+# harmless quirk in code this project doesn't own, only visible under a GCC
+# new enough to warn on it (this project's own code has no such shadowing).
+PG_CXXFLAGS += -Wno-error=overloaded-virtual
 PG_CXXFLAGS += -Wno-undef -Wall -Wcpp
 PG_CXXFLAGS += -Wno-register # otherwise C++17 gags on PostgreSQL headers
 PG_CXXFLAGS += -I$(ANTLR4_RUNTIME_INCLUDE_DIR)
 PG_CXXFLAGS += -std=c++17
 PG_CFLAGS += -g -Werror -Wfloat-conversion
 PG_CFLAGS += -fstack-protector-strong
+
+# Must be defined before PG_CPPFLAGS references it below: PGXS's own
+# `include $(PGXS)` further down expands PG_CPPFLAGS into CPPFLAGS via a
+# simple (:=) assignment, which forces immediate expansion at include time --
+# a TSQLSRC defined later in the file would still be empty at that point.
+TSQLSRC = .
 PG_CPPFLAGS += -I$(TSQLSRC) -I$(PG_SRC) -DFAULT_INJECTOR -Wfloat-conversion
 
 SHLIB_LINK += -L$(ANTLR4_RUNTIME_LIB_DIR) $(ANTLR4_RUNTIME_LIB) -lcrypto $(ICU_LIBS)
@@ -172,7 +183,6 @@ KEYWORDS += src/pl_unreserved_kwlist_d.h
 TOOLSDIR = $(PG_SRC)/src/tools
 GEN_KEYWORDLIST = $(PERL) -I $(TOOLSDIR) $(TOOLSDIR)/gen_keywordlist.pl
 GEN_KEYWORDLIST_DEPS = $(TOOLSDIR)/gen_keywordlist.pl $(TOOLSDIR)/PerfectHash.pm
-TSQLSRC = .
 
 antlr/Makefile: antlr/CMakeLists.txt antlr/TSqlLexer.g4 antlr/TSqlLexer.g4
 	cd antlr && $(cmake) . && cd ..
@@ -250,7 +260,10 @@ src/fts_parser.o: src/fts_scan.c src/fts_data.h
 src/fts.o: src/fts_scan.c src/fts_parser.c src/fts_data.h
 distprep: src/fts_scan.c src/fts_parser.c
 
-include $(PGXS)
+# NB: $(PGXS) is already included further up (right after the PGXS := line).
+# Including it a second time re-enters Makefile.global's srcdir/VPATH logic
+# after VPATH has been set to the lazily-expanded $(srcdir), which fails with
+# "Recursive variable 'srcdir' references itself".
 
 .DEFAULT_GOAL := all
 .PHONY: sql/$(EXTENSION)--$(EXTVERSION).sql

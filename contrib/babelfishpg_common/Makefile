@@ -50,8 +50,13 @@ OBJS += src/encoding/mb/conversion_procs/utf8_and_win/utf8_and_win.o
 OBJS += src/geo.o 
 OBJS += src/geo_parser.o
 
-PGXS := $(shell $(PG_CONFIG) --pgxs)
-include $(PGXS)
+# NB: do not include $(PGXS) here.  Everything below (the full DATA_built
+# with UPGRADES/GENERATED_UPGRADES, the GE91 test) still has to be defined
+# before PGXS is pulled in, and PGXS must be included exactly once -- a
+# second include re-enters Makefile.global's srcdir/VPATH logic after VPATH
+# has already been set to the lazily-expanded $(srcdir), which then fails
+# with "Recursive variable 'srcdir' references itself".  The single include
+# lives further down, after all variables are defined.
 
 MODULEPATH = $$libdir/$(EXTENSION)-$(BBFPGCMN_MAJOR_VERSION)
 
@@ -93,12 +98,14 @@ test		 = $(shell test $(1) $(2) $(3) && echo yes || echo no)
 GE91		 = $(call test, $(MAJORVER), -ge, 91)
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
 
+# These must stay *after* the include: they are the first explicit targets in
+# this file, and with only one PGXS include left they would otherwise become
+# make's default goal instead of PGXS's own `all`.
 src/geo_parser.o: src/geo_scan.c src/geo_data.h
 src/geo.o: src/geo_scan.c src/geo_parser.c src/geo_data.h
 distprep: src/geo_scan.c src/geo_parser.c
-
-include $(PGXS)
 
 ifeq ($(GE91),yes)
 all: sql/$(EXTENSION)--$(EXTVERSION).sql $(UPGRADES)
