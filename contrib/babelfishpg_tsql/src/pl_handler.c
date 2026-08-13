@@ -46,6 +46,7 @@
 #include "common/string.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pg_list.h"
@@ -5927,7 +5928,20 @@ _PG_init(void)
 	load_libraries("babelfishpg_common", NULL, false);
 	init_and_check_common_utility();
 
-	if (OidIsValid(get_extension_oid("vector", true)))
+	/*
+	 * get_extension_oid() does a SearchSysCache lookup, which requires a
+	 * running backend's catalog cache -- unavailable here when this module
+	 * is loaded from shared_preload_libraries, since _PG_init() then runs
+	 * inside the postmaster's process_shared_preload_libraries() before any
+	 * backend or catalog exists (same class of bug as babelfishpg_common's
+	 * init_tcode_trans_tab() call above it). It's also not meaningful in
+	 * that context regardless: "is extension vector created" is inherently
+	 * per-database, and the postmaster has no current database yet. Skip at
+	 * preload time; a session that actually needs the vector types will
+	 * load them the normal way (CREATE EXTENSION / its own LOAD).
+	 */
+	if (!process_shared_preload_libraries_in_progress &&
+		OidIsValid(get_extension_oid("vector", true)))
 		load_libraries("vector", NULL, false);
 
 	pg_bindtextdomain(TEXTDOMAIN);

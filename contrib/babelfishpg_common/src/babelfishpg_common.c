@@ -6,6 +6,7 @@
 
 #include "fmgr.h"
 #include "instr.h"
+#include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_target.h"
@@ -97,7 +98,23 @@ _PG_init(void)
 	common_utility_plugin **common_utility_plugin_ptr;
 
 	init_instr();
-	init_tcode_trans_tab(fcinfo);
+
+	/*
+	 * init_tcode_trans_tab() looks up the "sys" namespace and pg_type rows
+	 * via SearchSysCache, which requires a running backend's catalog cache
+	 * (InitCatalogCache(), never called in the postmaster process itself).
+	 * When this module is loaded from shared_preload_libraries, _PG_init()
+	 * runs inside process_shared_preload_libraries() in the postmaster,
+	 * before any backend or catalog exists -- calling it here would
+	 * dereference a NULL CatCache and crash. Per typecode.c's own design
+	 * (see its "Translation Table Initializers" comment), this call is
+	 * expected to safely no-op before the sys types exist and self-heal via
+	 * get_tsql_type_info()'s lazy re-init the first time a real backend
+	 * needs a type code -- so skipping it here is exactly that no-op path,
+	 * just without the SysCache access that isn't safe to attempt yet.
+	 */
+	if (!process_shared_preload_libraries_in_progress)
+		init_tcode_trans_tab(fcinfo);
 
 	coll_cb_ptr = (collation_callbacks **) find_rendezvous_variable("collation_callbacks");
 	*coll_cb_ptr = get_collation_callbacks();
