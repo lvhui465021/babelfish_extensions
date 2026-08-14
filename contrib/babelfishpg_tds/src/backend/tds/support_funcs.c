@@ -16,8 +16,7 @@
 static void pe_create_server_ports(void);
 static int	pe_create_server_port(int family, const char *hostName,
 								  unsigned short portNumber,
-								  const char *unixSocketDir,
-								  ProtocolExtensionConfig *protocol_config);
+								  const char *unixSocketDir);
 
 
 static int	Lock_AF_UNIX(const char *unixSocketDir, const char *unixSocketPath);
@@ -60,13 +59,11 @@ pe_create_server_ports(void)
 			if (strcmp(curhost, "*") == 0)
 				status = pe_create_server_port(AF_UNSPEC, NULL,
 											   (unsigned short) pe_port,
-											   NULL,
-											   &pe_config);
+											   NULL);
 			else
 				status = pe_create_server_port(AF_UNSPEC, curhost,
 											   (unsigned short) pe_port,
-											   NULL,
-											   &pe_config);
+											   NULL);
 
 			if (status == STATUS_OK)
 			{
@@ -114,8 +111,7 @@ pe_create_server_ports(void)
 static int
 pe_create_server_port(int family, const char *hostName,
 					  unsigned short portNumber,
-					  const char *unixSocketDir,
-					  ProtocolExtensionConfig *protocol_config)
+					  const char *unixSocketDir)
 
 {
 	pgsocket	fd;
@@ -358,15 +354,12 @@ pe_create_server_port(int family, const char *hostName,
 							familyDesc, addrDesc, (int) portNumber)));
 
 		/*
-		 * Stamp this listener as TDS so ServerLoop's accept dispatch sets
-		 * Port->protocol_kind correctly (see listen_add_protocol_socket's
-		 * header comment in protocol_extension.h). TDS never registers a
-		 * ProtocolRoutine -- it dispatches entirely through protocol_config
-		 * -- so this only affects protocol_kind-keyed logic (MyCompatMode
-		 * resolution, the fork-failure error framing guard), not the
-		 * TDS wire protocol itself.
+		 * Stamp this listener as TDS so ServerLoop's accept dispatch
+		 * resolves the TDS ProtocolRoutine for the connection (see
+		 * listen_add_protocol_socket's header comment in
+		 * protocol_extension.h).
 		 */
-		listen_add_protocol_socket(fd, protocol_config, COMPAT_PROTOCOL_TDS);
+		listen_add_protocol_socket(fd, COMPAT_PROTOCOL_TDS);
 		added++;
 	}
 

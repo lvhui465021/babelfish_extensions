@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "access/printtup.h"
 #include "commands/defrem.h"
 #include "common/ip.h"
 #include "miscadmin.h"
@@ -23,7 +24,9 @@
 #include "postmaster/compatibility.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/protocol_extension.h"
+#include "postmaster/protocol_routine.h"
 #include "pgstat.h"
+#include "tcop/dest.h"
 #include "storage/ipc.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -51,44 +54,83 @@ static ErrorContextCallback tdserrcontext;
 
 TdsErrorContextData *TdsErrorContext = NULL;
 
-static int	pe_accept(pgsocket server_fd, ClientSocket *client_sock);
-static int pe_close(pgsocket server_fd);
-static Port* pe_tds_init(ClientSocket *client_sock);
 static int	pe_start(Port * port);
-static void pe_authenticate(Port * port, const char **username);
+static void pe_tds_init(Port *port);
+static void pe_authenticate(Port *port);
 pg_noreturn static void pe_mainfunc(Port * port);
 static void pe_send_message(ErrorData *edata);
 static void pe_send_ready_for_query(CommandDest dest);
 static int	pe_read_command(StringInfo inBuf);
-static int	pe_process_command(void);
-static void pe_end_command(QueryCompletion *qc, CommandDest dest);
-static void pe_report_param_status(const char *name, char *val);
+static void pe_end_command(const QueryCompletion *qc, CommandDest dest,
+						   bool force_undecorated_output);
+static void pe_report_param_status(const char *name, const char *val);
+static void pe_comm_reset_noop(void);
+static bool pe_is_reading_msg_false(void);
+static void pe_send_backend_key_data_noop(int pid, const uint8 *key,
+										  int keylen);
+static void pe_session_initialize_noop(Port *port);
+static ProtocolCommandResult pe_process_command(int *command,
+											  StringInfo inBuf);
+static DestReceiver *TdsCreateDestReceiver(CommandDest dest);
 static void socket_close(int code, Datum arg);
 
 /* the dest reveiver support is kept in a separate file */
 #include "tdsprinttup.c"
 
-static ProtocolExtensionConfig pe_config = {
-	pe_accept,
-	pe_close,
-	pe_tds_init,
-	pe_start,
-	pe_authenticate,
-	pe_mainfunc,
-	pe_send_message,
-	NULL,						/* not interested in cancel key */
-	NULL,
-	NULL,
-	pe_send_ready_for_query,
-	pe_read_command,
-	pe_end_command,
-	TdsPrintTup,
-	TdsPrinttupStartup,
-	TdsShutdown,
-	TdsDestroy,
-	pe_process_command,
-	pe_report_param_status,
-	TdsDirectSSLHandshake
+/*
+ * TDS's ProtocolRoutine.  Registration replaces the retired
+ * ProtocolExtensionConfig (pe_config): the kernel now resolves every
+ * dispatch point -- postmaster accept/close, backend startup, error
+ * framing, DestReceiver construction, authentication -- through this
+ * single vtable, exactly like MySQL does.
+ *
+ * NULL members follow the documented ProtocolRoutine contract
+ * ("use the standard PostgreSQL behaviour"); the members whose
+ * standard behaviour would corrupt a TDS socket (comm_reset,
+ * is_reading_msg, send_backend_key_data, session_initialize,
+ * process_command) are given explicit no-op/stub implementations
+ * instead.  read_command/process_command are effectively unreachable:
+ * mainfunc replaces the PG main loop wholesale.
+ */
+static const ProtocolRoutine pe_routine = {
+	.kind = COMPAT_PROTOCOL_TDS,
+	.name = "TDS",
+
+	.init = pe_tds_init,		/* TDS state on the Port pq_init() created */
+	.startup_exchange = pe_start,
+	.mainfunc = pe_mainfunc,
+
+	.read_command = pe_read_command,
+	.process_command = pe_process_command,
+	.comm_reset = pe_comm_reset_noop,
+	.is_reading_msg = pe_is_reading_msg_false,
+
+	.session_initialize = pe_session_initialize_noop,
+	.send_backend_key_data = pe_send_backend_key_data_noop,
+
+	.create_dest_receiver = TdsCreateDestReceiver,
+	.set_remote_dest_receiver_params = SetRemoteDestReceiverParams,
+	.end_command = pe_end_command,
+	.null_command = standard_NullCommand,
+	.send_ready_for_query = pe_send_ready_for_query,
+
+	.allow_multi_statements = NULL,
+	.simple_query_statement_ends_xact = NULL,
+	.set_simple_query_more_results = NULL,
+	.before_simple_query_statement = NULL,
+	.capture_session_state = NULL,
+
+	.send_error = pe_send_message,
+	.report_parameter_status = pe_report_param_status,
+
+	.process_utility = NULL,
+	.parser_routine = NULL,
+
+	.authenticate = pe_authenticate,
+
+	.accept = NULL,				/* AcceptConnection is the default */
+	.close = NULL,				/* closesocket is the default */
+	.direct_ssl_handshake = TdsDirectSSLHandshake,
 };
 
 /*
@@ -105,6 +147,10 @@ pe_init(void)
 		if (Tds_be_tls_init(true) == 0)
 			LoadedSSL = true;
 #endif
+
+	/* Publish the full TDS vtable so every kernel dispatch point
+	 * resolves through the compatibility registry. */
+	RegisterProtocolRoutine(&pe_routine);
 
 	/*
 	 * Open the TDS listener from postmaster startup.  Registered in the
@@ -123,143 +169,18 @@ pe_fin(void)
 }
 
 /*
- * pe_accept - Accept a new incoming client connection
+ * pe_tds_init -- ProtocolRoutine.init hook, called by the kernel right
+ * after pq_init() has created the Port and assigned this routine.  The
+ * Port/socket plumbing that the retired pe_config's fn_init used to do
+ * is now covered by pq_init() itself (which also runs
+ * AssignProtocolRoutine()); what remains here is the TDS-specific
+ * per-connection state: client init, pltsql plugin rendezvous and the
+ * protocol hooks.
  */
-static int
-pe_accept(pgsocket server_fd, ClientSocket *client_sock)
-{
-	return AcceptConnection(server_fd, client_sock);
-}
-
-/*
- * pe_close - called to close server sockets in new backend
- */
-static int
-pe_close(pgsocket server_fd)
-{
-	return closesocket(server_fd);
-}
-
-/*
- * pe_init - equivalent of pq_init
- */
-static Port *
-pe_tds_init(ClientSocket *client_sock)
+static void
+pe_tds_init(Port *port)
 {
 	PLtsql_protocol_plugin **pltsql_plugin_handler_ptr_tmp;
-	Port	*port;
-
-	/* allocate the Port struct and copy the ClientSocket contents to it */
-	port = palloc0(sizeof(Port));
-	port->sock = client_sock->sock;
-	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
-	port->raddr.salen = client_sock->raddr.salen;
-
-	/*
-	 * Propagate the listener-selected dialect, mirroring pq_init()'s
-	 * client_sock->protocol_kind copy for standard/MySQL connections. TDS
-	 * never registers a ProtocolRoutine, so port->protocol_routine is
-	 * deliberately left NULL here (calling AssignProtocolRoutine() would
-	 * elog(FATAL) for a kind with no registered routine) -- only
-	 * protocol_kind-keyed logic (MyCompatMode resolution in InitCompatMode(),
-	 * the fork-failure error framing guard in postmaster.c) depends on this.
-	 */
-	port->protocol_kind = client_sock->protocol_kind;
- 
-	/* fill in the server (local) address */
-	port->laddr.salen = sizeof(port->laddr.addr);
-	if (getsockname(port->sock,
-					(struct sockaddr *) &port->laddr.addr,
-					&port->laddr.salen) < 0)
-	{
-		ereport(FATAL,
-				(errmsg("%s() failed: %m", "getsockname")));
-	}
- 
-	/* select NODELAY and KEEPALIVE options if it's a TCP connection */
-	if (port->laddr.addr.ss_family != AF_UNIX)
-	{
-		int			on;
-#ifdef WIN32
-		int			oldopt;
-		int			optlen;
-		int			newopt;
-#endif
- 
-#ifdef	TCP_NODELAY
-		on = 1;
-		if (setsockopt(port->sock, IPPROTO_TCP, TCP_NODELAY,
-					   (char *) &on, sizeof(on)) < 0)
-		{
-			ereport(FATAL,
-					(errmsg("%s(%s) failed: %m", "setsockopt", "TCP_NODELAY")));
-		}
-#endif
-		on = 1;
-		if (setsockopt(port->sock, SOL_SOCKET, SO_KEEPALIVE,
-					   (char *) &on, sizeof(on)) < 0)
-		{
-			ereport(FATAL,
-					(errmsg("%s(%s) failed: %m", "setsockopt", "SO_KEEPALIVE")));
-		}
- 
-#ifdef WIN32
- 
-		/*
-		 * This is a Win32 socket optimization.  The OS send buffer should be
-		 * large enough to send the whole Postgres send buffer in one go, or
-		 * performance suffers.  The Postgres send buffer can be enlarged if a
-		 * very large message needs to be sent, but we won't attempt to
-		 * enlarge the OS buffer if that happens, so somewhat arbitrarily
-		 * ensure that the OS buffer is at least PQ_SEND_BUFFER_SIZE * 4.
-		 * (That's 32kB with the current default).
-		 *
-		 * The default OS buffer size used to be 8kB in earlier Windows
-		 * versions, but was raised to 64kB in Windows 2012.  So it shouldn't
-		 * be necessary to change it in later versions anymore.  Changing it
-		 * unnecessarily can even reduce performance, because setting
-		 * SO_SNDBUF in the application disables the "dynamic send buffering"
-		 * feature that was introduced in Windows 7.  So before fiddling with
-		 * SO_SNDBUF, check if the current buffer size is already large enough
-		 * and only increase it if necessary.
-		 *
-		 * See https://support.microsoft.com/kb/823764/EN-US/ and
-		 * https://msdn.microsoft.com/en-us/library/bb736549%28v=vs.85%29.aspx
-		 */
-		optlen = sizeof(oldopt);
-		if (getsockopt(port->sock, SOL_SOCKET, SO_SNDBUF, (char *) &oldopt,
-					   &optlen) < 0)
-		{
-			ereport(FATAL,
-					(errmsg("%s(%s) failed: %m", "getsockopt", "SO_SNDBUF")));
-		}
-		newopt = PQ_SEND_BUFFER_SIZE * 4;
-		if (oldopt < newopt)
-		{
-			if (setsockopt(port->sock, SOL_SOCKET, SO_SNDBUF, (char *) &newopt,
-						   sizeof(newopt)) < 0)
-			{
-				ereport(FATAL,
-						(errmsg("%s(%s) failed: %m", "setsockopt", "SO_SNDBUF")));
-			}
-		}
-#endif
- 
-		/*
-		 * Also apply the current keepalive parameters.  If we fail to set a
-		 * parameter, don't error out, because these aren't universally
-		 * supported.  (Note: you might think we need to reset the GUC
-		 * variables to 0 in such a case, but it's not necessary because the
-		 * show hooks for these variables report the truth anyway.)
-		 */
-		(void) pq_setkeepalivesidle(tcp_keepalives_idle, port);
-		(void) pq_setkeepalivesinterval(tcp_keepalives_interval, port);
-		(void) pq_setkeepalivescount(tcp_keepalives_count, port);
-		(void) pq_settcpusertimeout(tcp_user_timeout, port);
-	}
-
-	/* This is client backend */
-	MyBackendType = B_BACKEND;
 
 	TdsClientInit(port);
 
@@ -318,8 +239,6 @@ pe_tds_init(ClientSocket *client_sock)
 
 	/* mark the connection as TDS */
 	port->is_tds_conn = true;
-
-	return port;
 }
 
 /*
@@ -374,7 +293,7 @@ pe_start(Port *port)
 }
 
 static void
-pe_authenticate(Port *port, const char **username)
+pe_authenticate(Port *port)
 {
 
 	/* Initialize the TDS backend status array in shmem */
@@ -485,7 +404,7 @@ pe_authenticate(Port *port, const char **username)
 
 	ClientAuthInProgress = false;	/* client_min_messages is active now */
 
-	*username = port->user_name;
+	/* The kernel reads the authenticated role from port->user_name. */
 	port->is_tds_conn = true;
 }
 
@@ -552,42 +471,85 @@ pe_read_command(StringInfo inBuf)
 	return rc;
 }
 
-static int
-pe_process_command()
+/*
+ * pe_process_command -- ProtocolRoutine.process_command.
+ *
+ * The TDS batch engine runs inside TdsSocketBackend(): pe_read_command
+ * drives one batch (the odd-numbered ones) and this callback drives the
+ * next (even-numbered ones); each call sends its batch's full response
+ * before returning, so the client never waits on a response while the
+ * server blocks on the next fetch.  Every batch response is returned as
+ * HANDLED so the PG main loop never sees TDS framing bytes.
+ */
+static ProtocolCommandResult
+pe_process_command(int *command, StringInfo inBuf)
 {
-	int			result;
-
-	/* Push the error context */
-	tdserrcontext.callback = TdsErrorContextCallback;
-	tdserrcontext.arg = TdsErrorContext;
-	tdserrcontext.previous = error_context_stack;
-	error_context_stack = &tdserrcontext;
-
-	result = TdsSocketBackend();
-
-	/*
-	 * If no transaction is on-going, enforce transaction state cleanup before
-	 * calling pgstat_report_stat function which requires a clean transaction
-	 * state.
-	 */
-	if (!IsTransactionOrTransactionBlock())
-		Cleanup_xact_PgStat();
-
-	/* Pop the error context stack */
-	error_context_stack = tdserrcontext.previous;
-	return result;
+	*command = TdsSocketBackend();
+	return PROTOCOL_COMMAND_HANDLED;
 }
 
 static void
-pe_end_command(QueryCompletion *qc, CommandDest dest)
+pe_end_command(const QueryCompletion *qc, CommandDest dest,
+			   bool force_undecorated_output)
 {
-	/* no-op */
+	/* no-op: TDS done-token framing lives in the send_done plugin path */
 }
 
 static void
-pe_report_param_status(const char *name, char *val)
+pe_report_param_status(const char *name, const char *val)
 {
-	/* no-op */
+	/* no-op: TDS has no ParameterStatus framing */
+}
+
+/*
+ * Defensive ProtocolRoutine members.  The retired pe_config left these
+ * NULL ("not interested"), and the kernel vtable wrappers treat NULL
+ * non-standard members as an error, so register explicit no-ops/false to
+ * preserve the old semantics: TDS does nothing on comm reset, is never
+ * "reading a message" from libpq's perspective, has its own cancel
+ * mechanism (never send a raw PG BackendKeyData), and performs its
+ * session setup inside the TDS login exchange itself.
+ */
+static void
+pe_comm_reset_noop(void)
+{
+}
+
+static bool
+pe_is_reading_msg_false(void)
+{
+	return false;
+}
+
+static void
+pe_send_backend_key_data_noop(int pid, const uint8 *key, int keylen)
+{
+}
+
+static void
+pe_session_initialize_noop(Port *port)
+{
+}
+
+/*
+ * TdsCreateDestReceiver -- ProtocolRoutine.create_dest_receiver.
+ *
+ * Replaces the retired fn_printtup quartet: build the standard DR_printtup
+ * (which carries the portal and per-attribute state TdsPrinttupStartup
+ * depends on) and install the TDS row-framing callbacks on top, exactly
+ * as printtup_create_DR() used to do for protocol_config-based TDS.
+ */
+static DestReceiver *
+TdsCreateDestReceiver(CommandDest dest)
+{
+	DestReceiver *self = printtup_create_DR(dest);
+
+	self->receiveSlot = TdsPrintTup;
+	self->rStartup = TdsPrinttupStartup;
+	self->rShutdown = TdsShutdown;
+	self->rDestroy = TdsDestroy;
+
+	return self;
 }
 
 /* --------------------------------
