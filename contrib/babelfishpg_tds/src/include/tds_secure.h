@@ -28,6 +28,23 @@
 #include <openssl/ec.h>
 #endif
 
+/*
+ * BIO_meth_new() and OPENSSL_init_ssl() exist since OpenSSL 1.1.0.  Detect
+ * them from the header version instead of relying on build-system feature
+ * macros: no build system of ours ever defined HAVE_BIO_METH_NEW or
+ * HAVE_OPENSSL_INIT_SSL, so the code used to silently compile the
+ * deprecated OpenSSL 1.0.x paths on modern systems.  Define them here so
+ * every TDS translation unit picks them up uniformly.
+ */
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#ifndef HAVE_BIO_METH_NEW
+#define HAVE_BIO_METH_NEW 1
+#endif
+#ifndef HAVE_OPENSSL_INIT_SSL
+#define HAVE_OPENSSL_INIT_SSL 1
+#endif
+#endif
+
 #include "libpq/libpq.h"
 #include "port/pg_bswap.h"
 

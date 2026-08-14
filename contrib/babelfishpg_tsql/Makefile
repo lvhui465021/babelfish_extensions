@@ -13,7 +13,12 @@ EXTVERSION = $(PGTSQL_MAJOR_VERSION).$(PGTSQL_MINOR_VERSION).$(PGTSQL_MICRO_VERS
 # 	src/test/regress/sql/babel_upgrade.sql should be modified to include the PREV_EXTVERSION to test the upgrade path
 # 	contrib/babelfishpg_tsql/sql/upgrades/$(EXTENSION)--$(PREV_EXTVERSION).sql should be present to test the upgrade path
 PREV_EXTVERSION = 1.0.0
-MODULEPATH = $$libdir/$(EXTENSION)-$(PGTSQL_MAJOR_VERSION)
+# Keep the module file unversioned, matching how the libraries are
+# loaded internally (load_libraries("babelfishpg_common", ...) in
+# pl_handler.c) and how babelfishpg_money/babelfishpg_tds are shipped.
+# The versioned-name convention in the control template had no matching
+# rename step in the build and required a manual symlink hack.
+MODULEPATH = $$libdir/$(EXTENSION)
 MODULE_big = $(EXTENSION)
 
 # $(OBJS) should contain the name of each .o file that
@@ -183,6 +188,11 @@ KEYWORDS += src/pl_unreserved_kwlist_d.h
 TOOLSDIR = $(PG_SRC)/src/tools
 GEN_KEYWORDLIST = $(PERL) -I $(TOOLSDIR) $(TOOLSDIR)/gen_keywordlist.pl
 GEN_KEYWORDLIST_DEPS = $(TOOLSDIR)/gen_keywordlist.pl $(TOOLSDIR)/PerfectHash.pm
+
+# Default to plain cmake; override on the make command line if it lives
+# elsewhere.  Previously this variable was never defined anywhere, so the
+# ANTLR code-generation step could only run with an explicit cmake=...
+cmake ?= cmake
 
 antlr/Makefile: antlr/CMakeLists.txt antlr/TSqlLexer.g4 antlr/TSqlLexer.g4
 	cd antlr && $(cmake) . && cd ..

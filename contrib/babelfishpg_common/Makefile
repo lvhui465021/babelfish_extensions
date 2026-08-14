@@ -9,7 +9,12 @@ EXTVERSION = $(BBFPGCMN_MAJOR_VERSION).$(BBFPGCMN_MINOR_VERSION).$(BBFPGCMN_MICR
 #		src/test/regress/sql/babel_upgrade.sql should be modified to include the PREV_EXTVERSION to test the upgrade path
 #		contrib/babelfishpg_tsql/sql/upgrades/$(EXTENSION)--$(PREV_EXTVERSION).sql should be present to test the upgrade path
 PREV_EXTVERSION = 1.0.0
-MODULEPATH = $$libdir/$(EXTENSION)-$(BBFPGCMN_MAJOR_VERSION)
+# Keep the module file unversioned: pl_handler.c loads
+# "babelfishpg_common" by that exact name at TDS login time, and the
+# versioned-name convention in the control template has no matching
+# rename step anywhere in the build.  An unversioned name everywhere
+# removes the old manual symlink hack.
+MODULEPATH = $$libdir/$(EXTENSION)
 MODULE_big = $(EXTENSION)
 
 PG_CFLAGS += -g -Werror -Wfloat-conversion
@@ -58,7 +63,7 @@ OBJS += src/geo_parser.o
 # with "Recursive variable 'srcdir' references itself".  The single include
 # lives further down, after all variables are defined.
 
-MODULEPATH = $$libdir/$(EXTENSION)-$(BBFPGCMN_MAJOR_VERSION)
+MODULEPATH = $$libdir/$(EXTENSION)
 
 UPGRADES = $(patsubst sql/upgrades/babelfishpg_common--%.sql,sql/babelfishpg_common--%.sql,$(wildcard sql/upgrades/babelfishpg_common--*.sql))
 GENERATED_UPGRADES = \
