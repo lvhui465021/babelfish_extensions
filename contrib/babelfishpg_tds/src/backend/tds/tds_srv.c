@@ -20,6 +20,7 @@
 #include "common/ip.h"
 #include "miscadmin.h"
 #include "parser/parse_expr.h"
+#include "postmaster/compatibility.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/protocol_extension.h"
 #include "pgstat.h"
@@ -42,8 +43,6 @@
 
 #include "tcop/backend_startup.h"
 
-static listen_init_hook_type prev_listen_init;
-
 /* Where the Unix socket files are (list of palloc'd strings) */
 static List *sock_paths = NIL;
 
@@ -53,7 +52,6 @@ static ErrorContextCallback tdserrcontext;
 TdsErrorContextData *TdsErrorContext = NULL;
 
 static int	pe_accept(pgsocket server_fd, ClientSocket *client_sock);
-static void pe_listen_init(void);
 static int pe_close(pgsocket server_fd);
 static Port* pe_tds_init(ClientSocket *client_sock);
 static int	pe_start(Port * port);
@@ -108,38 +106,20 @@ pe_init(void)
 			LoadedSSL = true;
 #endif
 
-	/* Install hooks */
-	prev_listen_init = listen_init_hook;
-	listen_init_hook = pe_listen_init;
+	/*
+	 * Open the TDS listener from postmaster startup.  Registered in the
+	 * per-dialect CompatibilityRoutine registry; the postmaster invokes
+	 * the slots in protocol-kind order, so no save-and-chain discipline
+	 * (and no load-order-dependent listener loss) is possible.
+	 */
+	RegisterListenInitRoutine(COMPAT_PROTOCOL_TDS, pe_create_server_ports);
 }
 
 void
 pe_fin(void)
 {
-	/* Uninstall hooks. */
-	listen_init_hook = prev_listen_init;
-}
-
-/*
- * pe_listen_init - Create the telnet server socket(s)
- */
-static void
-pe_listen_init(void)
-{
-	pe_create_server_ports();
-
-	/*
-	 * Chain to whatever listen_init_hook was already registered before us.
-	 * listen_init_hook is a single global function pointer, not a registry:
-	 * pe_init() saves the previous value but nothing called through to it,
-	 * so any listener registered earlier (e.g. openHalo's MySQL listener in
-	 * aux_mysql) was silently disabled whenever babelfishpg_tds appeared
-	 * later in shared_preload_libraries.  Chain unconditionally -- a
-	 * disabled TDS listener must not disable another module's listener
-	 * either (mirrors aux_mysql_init.c's mysql_listen_init()).
-	 */
-	if (prev_listen_init != NULL)
-		prev_listen_init();
+	/* Nothing to uninstall: listener registration lives in the kernel
+	 * registry slot filled by pe_init(). */
 }
 
 /*
