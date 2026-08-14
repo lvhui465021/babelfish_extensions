@@ -60,6 +60,7 @@
 #include "parser/parse_type.h"
 #include "parser/parse_utilcmd.h"
 #include "parser/scansup.h"
+#include "postmaster/protocol_routine.h"
 #include "pgstat.h"				/* for pgstat related activities */
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -6152,6 +6153,21 @@ _PG_init(void)
 	relname_lookup_hook = bbf_table_var_lookup;
 	prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = bbf_ProcessUtility;
+
+	/*
+	 * Route T-SQL DDL dispatch through the TDS vtable slot so that TDS
+	 * connections resolve bbf_ProcessUtility via GetCurrentProtocolRoutine()
+	 * (vtable-first) instead of the global ProcessUtility_hook singleton.
+	 * The hook install above stays: it is what carries Babelfish's DDL
+	 * handling for PG-protocol connections (T-SQL view-def blocking, ALTER
+	 * OWNER restrictions, DROP handling), whose ProtocolRoutine is the
+	 * kernel's standard PG one with a NULL process_utility.  The kernel
+	 * registry owns a mutable copy of the TDS routine, so this update is
+	 * visible to the Port even though it resolved protocol_routine at
+	 * pq_init() before babelfishpg_tsql was loaded.
+	 */
+	SetProtocolRoutineProcessUtility(COMPAT_PROTOCOL_TDS, bbf_ProcessUtility);
+
 	check_lang_as_clause_hook = pltsql_function_as_checker;
 	write_stored_proc_probin_hook = pltsql_function_probin_writer;
 	make_fn_arguments_from_stored_proc_probin_hook = pltsql_function_probin_reader;
@@ -6201,6 +6217,7 @@ _PG_fini(void)
 	relname_lookup_hook = prev_relname_lookup_hook;
 	uninstall_object_access_hook_drop_relation();
 	ProcessUtility_hook = prev_ProcessUtility;
+	SetProtocolRoutineProcessUtility(COMPAT_PROTOCOL_TDS, NULL);
 	guc_push_old_value_hook = prev_guc_push_old_value_hook;
 	validate_set_config_function_hook = prev_validate_set_config_function_hook;
 	non_tsql_proc_entry_hook = prev_non_tsql_proc_entry_hook;
