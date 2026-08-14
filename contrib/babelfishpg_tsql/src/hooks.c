@@ -43,6 +43,7 @@
 #include "executor/spi_priv.h"
 #include "funcapi.h"
 #include "libpq/libpq.h"
+#include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -69,6 +70,7 @@
 #include "storage/lock.h"
 #include "storage/sinvaladt.h"
 #include "tcop/utility.h"
+#include "utils/adtext.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -338,25 +340,20 @@ static pltsql_is_local_only_inval_msg_hook_type prev_pltsql_is_local_only_inval_
 static pltsql_get_tsql_enr_from_oid_hook_type prev_pltsql_get_tsql_enr_from_oid_hook = NULL;
 static inherit_view_constraints_from_table_hook_type prev_inherit_view_constraints_from_table = NULL;
 static bbfViewHasInsteadofTrigger_hook_type prev_bbfViewHasInsteadofTrigger_hook = NULL;
-static adjust_numeric_result_hook_type prev_adjust_numeric_result_hook = NULL;
 static ExecUpdateResultTypeTL_hook_type prev_ExecUpdateResultTypeTL_hook = NULL;
-static detect_numeric_overflow_hook_type prev_detect_numeric_overflow_hook = NULL;
 static match_pltsql_func_call_hook_type prev_match_pltsql_func_call_hook = NULL;
 static insert_pltsql_function_defaults_hook_type prev_insert_pltsql_function_defaults_hook = NULL;
 static replace_pltsql_function_defaults_hook_type prev_replace_pltsql_function_defaults_hook = NULL;
-static exprTypmod_hook_type prev_exprTypmod_hook = NULL;
 static post_transform_expr_recurse_hook_type prev_post_transform_expr_recurse_hook = NULL;
 static pre_transform_openxml_columns_hook_type prev_pre_transform_openxml_columns_hook = NULL;
 static print_pltsql_function_arguments_hook_type prev_print_pltsql_function_arguments_hook = NULL;
 static planner_hook_type prev_planner_hook = NULL;
 static transform_check_constraint_expr_hook_type prev_transform_check_constraint_expr_hook = NULL;
-static validate_var_datatype_scale_hook_type prev_validate_var_datatype_scale_hook = NULL;
 static modify_RangeTblFunction_tupdesc_hook_type prev_modify_RangeTblFunction_tupdesc_hook = NULL;
 static fill_missing_values_in_copyfrom_hook_type prev_fill_missing_values_in_copyfrom_hook = NULL;
 static check_rowcount_hook_type prev_check_rowcount_hook = NULL;
 static bbfCustomProcessUtility_hook_type prev_bbfCustomProcessUtility_hook = NULL;
 static bbfSelectIntoUtility_hook_type prev_bbfSelectIntoUtility_hook = NULL;
-static sortby_nulls_hook_type prev_sortby_nulls_hook = NULL;
 static optimize_explicit_cast_hook_type prev_optimize_explicit_cast_hook = NULL;
 static table_variable_satisfies_visibility_hook_type prev_table_variable_satisfies_visibility = NULL;
 static table_variable_satisfies_update_hook_type prev_table_variable_satisfies_update = NULL;
@@ -371,9 +368,6 @@ static called_from_tsql_insert_exec_hook_type pre_called_from_tsql_insert_exec_h
 static called_for_tsql_itvf_func_hook_type prev_called_for_tsql_itvf_func_hook = NULL;
 static exec_tsql_cast_value_hook_type pre_exec_tsql_cast_value_hook = NULL;
 static pltsql_pgstat_end_function_usage_hook_type prev_pltsql_pgstat_end_function_usage_hook = NULL;
-static pltsql_unique_constraint_nulls_ordering_hook_type prev_pltsql_unique_constraint_nulls_ordering_hook = NULL;
-static pltsql_strpos_non_determinstic_hook_type prev_pltsql_strpos_non_determinstic_hook = NULL;
-static pltsql_replace_non_determinstic_hook_type prev_pltsql_replace_non_determinstic_hook = NULL;
 static pltsql_is_partitioned_table_reloptions_allowed_hook_type prev_pltsql_is_partitioned_table_reloptions_allowed_hook = NULL;
 static ExecFuncProc_AclCheck_hook_type prev_ExecFuncProc_AclCheck_hook = NULL;
 static bbf_execute_grantstmt_as_dbsecadmin_hook_type prev_bbf_execute_grantstmt_as_dbsecadmin_hook = NULL;
@@ -389,6 +383,36 @@ static openxml_set_namespaces_hook_type prev_openxml_set_namespaces_hook = NULL;
 /*****************************************
  * 			Install / Uninstall
  *****************************************/
+
+/*
+ * T-SQL ADT extension method table for the TDS protocol kind.
+ *
+ * The vtable counterpart of the process-wide global hooks installed below:
+ * the kernel resolves type/typmod/collation behaviour through the per-dialect
+ * ADTExtMethod registry (keyed by CompatibilityProtocolKind) instead of a
+ * singleton that every non-TDS connection must defensively bypass.  All slots
+ * are wired here except coalesce_typmod: the kernel gates the vtable slot on
+ * nothing, while the legacy hook fallback is gated on cexpr->tsql_is_null,
+ * and the T-SQL implementation does not replicate the standard-PG answer for
+ * a plain COALESCE -- migrating it would change behaviour for non-ISNULL
+ * COALESCE on TDS connections.
+ */
+static const ADTExtMethod tsql_adtext = {
+	ADTEXT_METHOD_HEADER_INIT,
+	.expr_typmod = pltsql_exprTypmod,
+	.validate_var_datatype_scale = pltsql_validate_var_datatype_scale,
+	.param_collation = set_param_collation,
+	.default_collation = default_collation_for_builtin_type,
+	.strpos_non_deterministic = pltsql_strpos_non_determinstic,
+	.replace_non_deterministic = pltsql_replace_non_determinstic,
+	.adjust_numeric_result = adjust_numeric_result,
+	.detect_numeric_overflow = pltsql_detect_numeric_overflow,
+	.identity_datatype = pltsql_identity_datatype_map,
+	.sequence_datatype = pltsql_sequence_datatype_map,
+	.sortby_nulls = sort_nulls_first,
+	.unique_constraint_nulls_ordering = unique_constraint_nulls_ordering,
+};
+
 void
 InstallExtendedHooks(void)
 {
@@ -493,14 +517,10 @@ InstallExtendedHooks(void)
 	prev_bbfViewHasInsteadofTrigger_hook = bbfViewHasInsteadofTrigger_hook;
 	bbfViewHasInsteadofTrigger_hook = pltsql_bbfViewHasInsteadofTrigger;
 
-	prev_adjust_numeric_result_hook = adjust_numeric_result_hook;
-	adjust_numeric_result_hook = adjust_numeric_result;
 
 	prev_ExecUpdateResultTypeTL_hook = ExecUpdateResultTypeTL_hook;
 	ExecUpdateResultTypeTL_hook = pltsql_ExecUpdateResultTypeTL;
 
-	prev_detect_numeric_overflow_hook = detect_numeric_overflow_hook;
-	detect_numeric_overflow_hook = pltsql_detect_numeric_overflow;
 
 	prev_match_pltsql_func_call_hook = match_pltsql_func_call_hook;
 	match_pltsql_func_call_hook = match_pltsql_func_call;
@@ -511,8 +531,6 @@ InstallExtendedHooks(void)
 	prev_replace_pltsql_function_defaults_hook = replace_pltsql_function_defaults_hook;
 	replace_pltsql_function_defaults_hook = replace_pltsql_function_defaults;
 
-	prev_exprTypmod_hook = exprTypmod_hook;
-	exprTypmod_hook = pltsql_exprTypmod;
 
 	prev_post_transform_expr_recurse_hook = post_transform_expr_recurse_hook;
 	post_transform_expr_recurse_hook = pltsql_post_transform_expr_recurse;
@@ -533,8 +551,6 @@ InstallExtendedHooks(void)
 	prev_transform_check_constraint_expr_hook = transform_check_constraint_expr_hook;
 	transform_check_constraint_expr_hook = transform_like_in_add_constraint;
 
-	prev_validate_var_datatype_scale_hook = validate_var_datatype_scale_hook;
-	validate_var_datatype_scale_hook = pltsql_validate_var_datatype_scale;
 
 	prev_modify_RangeTblFunction_tupdesc_hook = modify_RangeTblFunction_tupdesc_hook;
 	modify_RangeTblFunction_tupdesc_hook = modify_RangeTblFunction_tupdesc;
@@ -550,8 +566,6 @@ InstallExtendedHooks(void)
 	prev_bbfSelectIntoUtility_hook = bbfSelectIntoUtility_hook;
 	bbfSelectIntoUtility_hook = pltsql_bbfSelectIntoUtility; 
 
-	prev_sortby_nulls_hook = sortby_nulls_hook;
-	sortby_nulls_hook = sort_nulls_first;
 
 	prev_table_variable_satisfies_update = table_variable_satisfies_update_hook;
 	table_variable_satisfies_update_hook = TVHeapTupleSatisfiesUpdate;
@@ -603,20 +617,12 @@ InstallExtendedHooks(void)
 	prev_pltsql_pgstat_end_function_usage_hook = pltsql_pgstat_end_function_usage_hook;
 	pltsql_pgstat_end_function_usage_hook = is_function_pg_stat_valid;
 
-	prev_pltsql_unique_constraint_nulls_ordering_hook = pltsql_unique_constraint_nulls_ordering_hook;
-	pltsql_unique_constraint_nulls_ordering_hook = unique_constraint_nulls_ordering;
 
-	prev_pltsql_strpos_non_determinstic_hook = pltsql_strpos_non_determinstic_hook;
-	pltsql_strpos_non_determinstic_hook = pltsql_strpos_non_determinstic;
 
-	prev_pltsql_replace_non_determinstic_hook = pltsql_replace_non_determinstic_hook;
-	pltsql_replace_non_determinstic_hook = pltsql_replace_non_determinstic;
 
 	prev_pltsql_is_partitioned_table_reloptions_allowed_hook = pltsql_is_partitioned_table_reloptions_allowed_hook;
 	pltsql_is_partitioned_table_reloptions_allowed_hook = is_partitioned_table_reloptions_allowed;
 
-	handle_param_collation_hook = set_param_collation;
-	handle_default_collation_hook = default_collation_for_builtin_type;
 
 	prev_ExecFuncProc_AclCheck_hook  = ExecFuncProc_AclCheck_hook;
 	ExecFuncProc_AclCheck_hook = pltsql_ExecFuncProc_AclCheck;
@@ -655,6 +661,14 @@ InstallExtendedHooks(void)
 	walk_view_rule_hook = mark_nodes_inside_view;
 
 	handle_target_view_hook = tsql_handle_target_view_hook;
+
+	/*
+	 * Register the T-SQL ADT vtable slot set.  Runs during TDS login (the
+	 * authenticate phase of InitPostgres, via _PG_init), which precedes
+	 * InitADTExt() in the same InitPostgres, so the slots are picked up
+	 * with no re-init needed.
+	 */
+	RegisterADTExt(COMPAT_PROTOCOL_TDS, &tsql_adtext);
 }
 
 void
@@ -690,25 +704,20 @@ UninstallExtendedHooks(void)
 	GetNewTempOidWithIndex_hook = prev_GetNewTempOidWithIndex_hook;
 	inherit_view_constraints_from_table_hook = prev_inherit_view_constraints_from_table;
 	bbfViewHasInsteadofTrigger_hook = prev_bbfViewHasInsteadofTrigger_hook;
-	adjust_numeric_result_hook = prev_adjust_numeric_result_hook;
 	ExecUpdateResultTypeTL_hook = prev_ExecUpdateResultTypeTL_hook;
-	detect_numeric_overflow_hook = prev_detect_numeric_overflow_hook;
 	match_pltsql_func_call_hook = prev_match_pltsql_func_call_hook;
 	insert_pltsql_function_defaults_hook = prev_insert_pltsql_function_defaults_hook;
 	replace_pltsql_function_defaults_hook = prev_replace_pltsql_function_defaults_hook;
-	exprTypmod_hook = prev_exprTypmod_hook;
 	post_transform_expr_recurse_hook = prev_post_transform_expr_recurse_hook;
 	pre_transform_openxml_columns_hook = prev_pre_transform_openxml_columns_hook;
 	print_pltsql_function_arguments_hook = prev_print_pltsql_function_arguments_hook;
 	planner_hook = prev_planner_hook;
 	transform_check_constraint_expr_hook = prev_transform_check_constraint_expr_hook;
-	validate_var_datatype_scale_hook = prev_validate_var_datatype_scale_hook;
 	modify_RangeTblFunction_tupdesc_hook = prev_modify_RangeTblFunction_tupdesc_hook;
 	fill_missing_values_in_copyfrom_hook = prev_fill_missing_values_in_copyfrom_hook;
 	check_rowcount_hook = prev_check_rowcount_hook;
 	bbfCustomProcessUtility_hook = prev_bbfCustomProcessUtility_hook;
 	bbfSelectIntoUtility_hook = prev_bbfSelectIntoUtility_hook;
-	sortby_nulls_hook = prev_sortby_nulls_hook;
 	table_variable_satisfies_visibility_hook = prev_table_variable_satisfies_visibility;
 	table_variable_satisfies_update_hook = prev_table_variable_satisfies_update;
 	table_variable_satisfies_vacuum_hook = prev_table_variable_satisfies_vacuum;
@@ -724,9 +733,6 @@ UninstallExtendedHooks(void)
 	called_from_tsql_insert_exec_hook = pre_called_from_tsql_insert_exec_hook;
 	called_for_tsql_itvf_func_hook = prev_called_for_tsql_itvf_func_hook;
 	pltsql_pgstat_end_function_usage_hook = prev_pltsql_pgstat_end_function_usage_hook;
-	pltsql_unique_constraint_nulls_ordering_hook = prev_pltsql_unique_constraint_nulls_ordering_hook;
-	pltsql_strpos_non_determinstic_hook = prev_pltsql_strpos_non_determinstic_hook;
-	pltsql_replace_non_determinstic_hook = prev_pltsql_replace_non_determinstic_hook;
 	pltsql_is_partitioned_table_reloptions_allowed_hook = prev_pltsql_is_partitioned_table_reloptions_allowed_hook;	
 	ExecFuncProc_AclCheck_hook = prev_ExecFuncProc_AclCheck_hook;
 	bbf_execute_grantstmt_as_dbsecadmin_hook = prev_bbf_execute_grantstmt_as_dbsecadmin_hook;
@@ -739,8 +745,6 @@ UninstallExtendedHooks(void)
 
 	bbf_InitializeParallelDSM_hook = NULL;
 	bbf_ParallelWorkerMain_hook = NULL;
-	handle_param_collation_hook = NULL;
-	handle_default_collation_hook = NULL;
 	pltsql_get_object_identity_event_trigger_hook = NULL;
 	pltsql_allow_storing_init_privs_hook = NULL;
 	is_bbf_tds_connection_hook = NULL;

@@ -2154,6 +2154,13 @@ extern void pltsql_free_function_memory(PLtsql_function *func);
 extern void pltsql_dumptree(PLtsql_function *func);
 extern void pre_function_call_hook_impl(const char *funcName);
 extern int32 coalesce_typmod_hook_impl(const CoalesceExpr *cexpr);
+extern void pltsql_identity_datatype_map(ParseState *pstate, ColumnDef *column);
+extern void pltsql_sequence_datatype_map(ParseState *pstate,
+										 Oid *newtypid,
+										 bool for_identity,
+										 DefElem *as_type,
+										 DefElem **max_value,
+										 DefElem **min_value);
 extern void check_restricted_object(Oid object_id, ObjectType object_type);
 extern bool is_tsql_atatglobalvar(const char *varname);
 extern bool is_tsql_atatuservar(const char *varname);
