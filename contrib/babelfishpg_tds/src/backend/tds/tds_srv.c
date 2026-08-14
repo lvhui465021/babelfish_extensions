@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 
 #include "access/printtup.h"
+#include "access/xact.h"
 #include "commands/defrem.h"
 #include "common/ip.h"
 #include "miscadmin.h"
@@ -87,10 +88,11 @@ static void socket_close(int code, Datum arg);
  * NULL members follow the documented ProtocolRoutine contract
  * ("use the standard PostgreSQL behaviour"); the members whose
  * standard behaviour would corrupt a TDS socket (comm_reset,
- * is_reading_msg, send_backend_key_data, session_initialize,
- * process_command) are given explicit no-op/stub implementations
- * instead.  read_command/process_command are effectively unreachable:
- * mainfunc replaces the PG main loop wholesale.
+ * is_reading_msg, send_backend_key_data, session_initialize) are given
+ * explicit no-op/stub implementations instead.  mainfunc is
+ * PostgresMain, whose kernel loop calls read_command/process_command:
+ * the two alternate driving one TDS batch each through
+ * TdsSocketBackend() (both must push/pop the TDS error context).
  */
 static const ProtocolRoutine pe_routine = {
 	.kind = COMPAT_PROTOCOL_TDS,
@@ -484,7 +486,29 @@ pe_read_command(StringInfo inBuf)
 static ProtocolCommandResult
 pe_process_command(int *command, StringInfo inBuf)
 {
+	/*
+	 * Push the TDS error context around the batch, exactly like
+	 * pe_read_command(): ExecuteSQLBatch() (tdssqlbatch.c) pops the
+	 * current error context before logging a batch, so a TDS context
+	 * must be on the stack whenever TdsSocketBackend() runs.
+	 */
+	tdserrcontext.callback = TdsErrorContextCallback;
+	tdserrcontext.arg = TdsErrorContext;
+	tdserrcontext.previous = error_context_stack;
+	error_context_stack = &tdserrcontext;
+
 	*command = TdsSocketBackend();
+
+	/*
+	 * If no transaction is on-going, enforce transaction state cleanup
+	 * before pgstat reporting (pgstat_report_stat requires a clean
+	 * transaction state).  Mirrors upstream pe_process_command().
+	 */
+	if (!IsTransactionOrTransactionBlock())
+		Cleanup_xact_PgStat();
+
+	/* Pop the error context stack */
+	error_context_stack = tdserrcontext.previous;
 	return PROTOCOL_COMMAND_HANDLED;
 }
 
