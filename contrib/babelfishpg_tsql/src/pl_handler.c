@@ -45,6 +45,7 @@
 #include "common/md5.h"
 #include "common/string.h"
 #include "funcapi.h"
+#include "libpq/libpq-be.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -65,6 +66,7 @@
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/adtext.h"
 #include "utils/builtins.h"
 #include "utils/guc_tables.h"
 #include "utils/inval.h"
@@ -311,7 +313,6 @@ PLtsql_protocol_plugin **pltsql_protocol_plugin_ptr = NULL;
 static pre_parse_analyze_hook_type prev_pre_parse_analyze_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 static pltsql_sequence_validate_increment_hook_type prev_pltsql_sequence_validate_increment_hook = NULL;
-static pltsql_identity_datatype_hook_type prev_pltsql_identity_datatype_hook = NULL;
 static pltsql_sequence_datatype_hook_type prev_pltsql_sequence_datatype_hook = NULL;
 static relname_lookup_hook_type prev_relname_lookup_hook = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
@@ -2471,9 +2472,6 @@ pltsql_identity_datatype_map(ParseState *pstate, ColumnDef *column)
 	Type		ctype;
 	Oid			typeOid;
 	Oid			tsqlSeqTypOid;
-
-	if (prev_pltsql_identity_datatype_hook)
-		prev_pltsql_identity_datatype_hook(pstate, column);
 
 	if (sql_dialect != SQL_DIALECT_TSQL)
 		return;
@@ -5910,6 +5908,21 @@ pltsql_truncate_identifier_func(PG_FUNCTION_ARGS)
 }
 
 /*
+ * T-SQL ADT extension method table for the TDS protocol kind.
+ *
+ * This is the vtable counterpart of the process-wide global hooks installed
+ * below: the kernel resolves type/typmod/collation behaviour through the
+ * per-dialect ADTExtMethod registry (keyed by CompatibilityProtocolKind)
+ * instead of a singleton that every non-TDS connection must defensively
+ * bypass.  Only the identity-datatype slot is wired in this pilot migration;
+ * every other slot falls back to the standard PostgreSQL behaviour.
+ */
+static const ADTExtMethod tsql_adtext = {
+	ADTEXT_METHOD_HEADER_INIT,
+	.identity_datatype = pltsql_identity_datatype_map,
+};
+
+/*
  * _PG_init()			- library load-time initialization
  *
  * DO NOT make this static nor change its name!
@@ -6142,8 +6155,7 @@ _PG_init(void)
 	prev_pltsql_sequence_validate_increment_hook = pltsql_sequence_validate_increment_hook;
 	pltsql_sequence_validate_increment_hook = pltsql_sequence_validate_increment;
 
-	prev_pltsql_identity_datatype_hook = pltsql_identity_datatype_hook;
-	pltsql_identity_datatype_hook = pltsql_identity_datatype_map;
+	RegisterADTExt(COMPAT_PROTOCOL_TDS, &tsql_adtext);
 
 	prev_pltsql_sequence_datatype_hook = pltsql_sequence_datatype_hook;
 	pltsql_sequence_datatype_hook = pltsql_sequence_datatype_map;
@@ -6211,7 +6223,6 @@ _PG_fini(void)
 	pre_parse_analyze_hook = prev_pre_parse_analyze_hook;
 	post_parse_analyze_hook = prev_post_parse_analyze_hook;
 	pltsql_sequence_validate_increment_hook = prev_pltsql_sequence_validate_increment_hook;
-	pltsql_identity_datatype_hook = prev_pltsql_identity_datatype_hook;
 	pltsql_sequence_datatype_hook = prev_pltsql_sequence_datatype_hook;
 	plansource_complete_hook = prev_plansource_complete_hook;
 	plansource_revalidate_hook = prev_plansource_revalidate_hook;
