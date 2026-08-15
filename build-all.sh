@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# build-all.sh -- reproducible, zero-manual-step build of the multi-protocol
-# stack: the modified PostgreSQL 18.3 kernel (postgresql_modified_for_babelfish)
-# plus all four Babelfish extensions (common, money, tds, tsql) and the three
-# MySQL compatibility modules (mysql_parser, mysm, aux_mysql).
+# build-all.sh -- reproducible, zero-manual-step build of the modified
+# PostgreSQL 18.3 kernel (postgresql_modified_for_babelfish) plus the four
+# Babelfish extensions (common, money, tds, tsql).
 #
-# The MySQL modules live in the kernel tree's contrib/ during the Phase 1
-# pluginization (kernel meson no longer builds them); they will move to their
-# own repository, mirroring babelfish_extensions.  mysql_parser needs flex and
-# bison for its scanner/grammar generation.
+# MySQL compatibility is built independently from the sibling
+# mysql_extensions repository.  Its three PGXS modules were removed from the
+# kernel tree in pluginization Phase 2, so do not add a kernel-contrib build
+# loop here.
 #
 # What this removes (see FUSION_PLAN.md P1-2/P1-3/P1-5/P1-8/P1-10):
 #   - manual CPPFLAGS="-DHAVE_BIO_METH_NEW -DHAVE_OPENSSL_INIT_SSL"  (now in
@@ -37,7 +36,7 @@ if [ ! -d "$KERNEL_DIR" ]; then
     exit 1
 fi
 
-for tool in meson ninja make cc c++ pkg-config cmake java flex bison perl; do
+for tool in meson ninja make cc c++ pkg-config cmake java flex perl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
 done
 [ -f /usr/local/include/antlr4-runtime/antlr4-runtime.h ] || {
@@ -68,19 +67,12 @@ for ext in babelfishpg_common babelfishpg_money babelfishpg_tds babelfishpg_tsql
              -j"$(nproc)" all install)
 done
 
-# --- MySQL compatibility modules (Phase 1: still in the kernel tree) ------
 echo
-echo "===== building mysql compatibility modules ====="
-for ext in mysql_parser mysm aux_mysql; do
-    echo "===== building $ext ====="
-    (cd "$KERNEL_DIR/contrib/$ext" && \
-        make USE_PGXS=1 PG_CONFIG="$PGCONFIG" PG_SRC="$KERNEL_DIR" \
-             -j"$(nproc)" all install)
-done
-
+echo "all Babelfish extensions built and installed:"
+ls "$PKGLIBDIR" | grep -E 'babelfish'
 echo
-echo "all extensions built and installed:"
-ls "$PKGLIBDIR" | grep -E 'babelfish|mysql_parser|mysm|aux_mysql'
+echo "build the independent MySQL modules next:"
+echo "  $SCRIPT_DIR/../mysql_extensions/build-all.sh"
 echo
 echo "restart any running cluster to pick up the new binaries:"
 echo "  $PREFIX/bin/pg_ctl -D <data-dir> restart"
