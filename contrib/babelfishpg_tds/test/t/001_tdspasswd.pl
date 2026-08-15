@@ -27,6 +27,7 @@ sub reset_pg_hba
 
 # Initialize primary node
 my $node = PostgreSQL::Test::Cluster->new('primary');
+my $tsql_port = PostgreSQL::Test::Cluster::get_free_port();
 $node->init;
 $node->append_conf(
 	'postgresql.conf', qq{
@@ -34,11 +35,12 @@ log_connections = on
 listen_addresses='127.0.0.1'
 shared_preload_libraries = 'babelfishpg_tds'
 lc_messages = 'C'
+babelfishpg_tds.port = $tsql_port
 });
 $node->start;
 
 # Initialize Babelfish
-my $tsql_node = new TDSNode($node);
+my $tsql_node = new TDSNode($node, tsql_port => $tsql_port);
 $tsql_node->init_tsql('test_master', 'testdb');
 
 # Create a login with password

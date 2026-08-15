@@ -12,6 +12,7 @@ use TDSNode;
 
 # Initialize primary node
 my $node = PostgreSQL::Test::Cluster->new('primary');
+my $tsql_port = PostgreSQL::Test::Cluster::get_free_port();
 $node->init;
 $node->append_conf(
 	'postgresql.conf', qq{
@@ -20,11 +21,12 @@ listen_addresses='127.0.0.1'
 shared_preload_libraries = 'babelfishpg_tds'
 lc_messages = 'C'
 babelfishpg_tsql.database_name = 'testdb'
+babelfishpg_tds.port = $tsql_port
 });
 $node->start;
 
 # Create user and a babelfish database but don't create babelfish extensions
-my $tsql_node = new TDSNode($node);
+my $tsql_node = new TDSNode($node, tsql_port => $tsql_port);
 $node->safe_psql('postgres', qq{CREATE USER test_master WITH SUPERUSER CREATEDB CREATEROLE PASSWORD '12345678' INHERIT});
 $node->safe_psql('postgres', qq{CREATE DATABASE testdb OWNER test_master});
 

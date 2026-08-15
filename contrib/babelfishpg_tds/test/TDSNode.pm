@@ -20,7 +20,9 @@ sub new {
 
 	my $self = {
 		_node => $node,
-		_tsql_port => 1433,
+		# Keep 1433 as the product default, while allowing tests that run beside
+		# an existing Babelfish instance to select an isolated listener port.
+		_tsql_port => defined $params{tsql_port} ? $params{tsql_port} : 1433,
 		_tsql_master_role => '',
 		_tsql_master_db => '',
 		_tsql_migration_mode => '',
