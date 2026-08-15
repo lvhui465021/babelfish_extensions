@@ -35,6 +35,7 @@ my $dump4_file = "$tempdir/dump_db_new.custom";
 my $oldnode =
   PostgreSQL::Test::Cluster->new('old_node',
 	install_path => $ENV{oldinstall});
+my $old_tsql_port = PostgreSQL::Test::Cluster::get_free_port();
 $oldnode->init;
 $oldnode->append_conf(
 	'postgresql.conf', qq{
@@ -42,15 +43,17 @@ $oldnode->append_conf(
 	listen_addresses='127.0.0.1'
 	shared_preload_libraries = 'babelfishpg_tds'
 	lc_messages = 'C'
+	babelfishpg_tds.port = $old_tsql_port
 });
 $oldnode->start;
 # Initialize Babelfish in old node
-my $tsql_oldnode = new TDSNode($oldnode);
+my $tsql_oldnode = new TDSNode($oldnode, tsql_port => $old_tsql_port);
 $tsql_oldnode->init_tsql('test_master', 'testdb');
 $oldnode->stop;
 
 # Initialize a new node for the restore.
 my $newnode = PostgreSQL::Test::Cluster->new('new_node');
+my $new_tsql_port = PostgreSQL::Test::Cluster::get_free_port();
 $newnode->init;
 $newnode->append_conf(
 	'postgresql.conf', qq{
@@ -58,10 +61,11 @@ $newnode->append_conf(
 	listen_addresses='127.0.0.1'
 	shared_preload_libraries = 'babelfishpg_tds'
 	lc_messages = 'C'
+	babelfishpg_tds.port = $new_tsql_port
 });
 $newnode->start;
 # Initialize Babelfish in new node
-my $tsql_newnode = new TDSNode($newnode);
+my $tsql_newnode = new TDSNode($newnode, tsql_port => $new_tsql_port);
 $tsql_newnode->init_tsql('test_master', 'testdb');
 $newnode->stop;
 
@@ -155,6 +159,7 @@ $oldnode->stop;
 
 # Initialize a node with the current version to dump.
 my $newnode2 = PostgreSQL::Test::Cluster->new('new_node2');
+my $new_tsql_port2 = PostgreSQL::Test::Cluster::get_free_port();
 $newnode2->init;
 $newnode2->append_conf(
 	'postgresql.conf', qq{
@@ -162,10 +167,11 @@ $newnode2->append_conf(
 	listen_addresses='127.0.0.1'
 	shared_preload_libraries = 'babelfishpg_tds'
 	lc_messages = 'C'
+	babelfishpg_tds.port = $new_tsql_port2
 });
 $newnode2->start;
 # Initialize Babelfish in new node
-my $tsql_newnode2 = new TDSNode($newnode2);
+my $tsql_newnode2 = new TDSNode($newnode2, tsql_port => $new_tsql_port2);
 $tsql_newnode2->init_tsql('test_master', 'testdb', 'multi-db');
 
 # Dump global objects using pg_dumpall. Note that we

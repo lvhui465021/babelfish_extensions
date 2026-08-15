@@ -74,6 +74,7 @@ my $krb5_cache  = "${PostgreSQL::Test::Utils::tmp_check}/krb5cc";
 my $krb5_log    = "${PostgreSQL::Test::Utils::log_path}/krb5libs.log";
 my $kdc_log     = "${PostgreSQL::Test::Utils::log_path}/krb5kdc.log";
 my $kdc_port    = PostgreSQL::Test::Cluster::get_free_port();
+my $tsql_port   = PostgreSQL::Test::Cluster::get_free_port();
 my $kdc_datadir = "${PostgreSQL::Test::Utils::tmp_check}/krb5kdc";
 my $kdc_pidfile = "${PostgreSQL::Test::Utils::tmp_check}/krb5kdc.pid";
 my $keytab      = "${PostgreSQL::Test::Utils::tmp_check}/krb5.keytab";
@@ -162,7 +163,7 @@ $ENV{'KRB5_KDC_PROFILE'} = $kdc_conf;
 $ENV{'KRB5CCNAME'}       = $krb5_cache;
 
 my $service_principal = "$ENV{with_krb_srvnam}/$host";
-my $tsql_service_principal = "MSSQLSvc/$hostaddr:1433";
+my $tsql_service_principal = "MSSQLSvc/$hostaddr:$tsql_port";
 
 system_or_bail $kdb5_util, 'create', '-s', '-P', 'secret0';
 
@@ -191,11 +192,12 @@ krb_server_keyfile = '$keytab'
 log_connections = on
 shared_preload_libraries = 'babelfishpg_tds'
 lc_messages = 'C'
+babelfishpg_tds.port = $tsql_port
 });
 $node->start;
 
 # Initialize Babelfish
-my $tsql_node = new TDSNode($node);
+my $tsql_node = new TDSNode($node, tsql_port => $tsql_port);
 $tsql_node->init_tsql('test_master', 'testdb');
 
 $node->safe_psql('postgres', 'CREATE USER test1;');
