@@ -6,6 +6,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 use Scalar::Util qw(blessed);
+use Text::ParseWords qw(shellwords);
 
 our @EXPORT = qw(
   init_tsql
@@ -105,9 +106,19 @@ sub tsql {
 		@connarray = $self->tsql_connstr_with_role($dbname, $role, '');
 	}
 
+	# Permit the test runner to select client-specific connection behavior,
+	# such as SQLCMD 18's optional-encryption mode, without changing each TAP
+	# test. Values are parsed as shell words to preserve quoted arguments.
+	my @sqlcmd_options = ();
+	if (defined $ENV{BABELFISH_SQLCMD_OPTIONS})
+	{
+		@sqlcmd_options = shellwords($ENV{BABELFISH_SQLCMD_OPTIONS});
+	}
+
 	# Build connection string with database, query and warning level
 	my @tsql_params = (
 		$node->installed_command('sqlcmd'),
+		@sqlcmd_options,
 		'-Q', $sql,
 		'-r1');
 
