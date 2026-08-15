@@ -201,6 +201,11 @@ antlr/Makefile: antlr/CMakeLists.txt antlr/TSqlLexer.g4 antlr/TSqlLexer.g4
 antlr/libantlr_tsql.a: antlr/Makefile
 	$(MAKE) -C $(@D) all
 
+# tsqlIface.cpp and tsqlUnsupportedFeatureHandler.cpp include headers emitted
+# by the ANTLR CMake target.  MODULE_big builds OBJS in parallel, so merely
+# listing libantlr_tsql.a in OBJS does not establish this ordering.
+src/tsqlIface.o src/tsqlUnsupportedFeatureHandler.o: antlr/libantlr_tsql.a
+
 # See notes in src/backend/parser/Makefile about the following two rules
 src/pl_gram.h: src/pl_gram.c
 	touch $@
